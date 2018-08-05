@@ -1,0 +1,387 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Nath"
+date: "August 3, 2018"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+fontsize: 14pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = FALSE, echo = TRUE,message = FALSE,warning = FALSE, fig.height = 4) 
+
+```
+
+##Load Library
+
+```{r}
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(scales))
+suppressPackageStartupMessages(library(DT))
+suppressPackageStartupMessages(library(corrplot))
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(rpart))
+suppressPackageStartupMessages(library(rpart.plot))
+suppressPackageStartupMessages(library(randomForest))
+suppressPackageStartupMessages(library(parallel))
+suppressPackageStartupMessages(library(doParallel))
+options(scipen = 999)
+
+```
+
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 14px;
+  }
+td {  /* Table  */
+  font-size: 8px;
+}
+h1.title {
+  font-size: 18px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 18px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+    font-size: 16px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 14px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size:12px;
+}
+pre { /* or output of knitr chunks */
+    font-size: 12px;
+}
+</style>
+
+## Synopsis
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+In this project, my goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. </br> 
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+We will use 2 datasets, the training data and the test data.
+
+## Reading the Data
+
+**Download dataset**
+
+```{r,cache = TRUE}
+if (!file.exists("data")) {dir.create("data")}
+
+if (!file.exists("./data/repdata%2Fdata%2FStormData.csv.bz2")) {
+    fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(fileUrl, destfile = "./data/pml-training.csv",method = "curl")
+}
+
+
+if (!file.exists("./data/repdata%2Fdata%2FStormData.csv.bz2")) {
+    fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(fileUrl, destfile = "./data/pml-testing.csv",method = "curl")
+}
+```
+**Load dataset**
+```{r}
+pmlTraining <- read.csv("./data/pml-training.csv", sep = ",", header = T, stringsAsFactors = FALSE, encoding = 'UTF-8')
+pmlTesting <- read.csv("./data/pml-testing.csv", sep = ",", header = T, stringsAsFactors = FALSE, encoding = 'UTF-8')
+```
+
+## Looking at the data
+
+We will show the code but not the output because we have too many varaibles.
+
+```{r, results= 'hide'}
+str(pmlTraining)
+```
+
+The training data set has `r nrow(pmlTraining)` observations and `r ncol(pmlTraining)` variables.
+
+```{r, results= 'hide'}
+str(pmlTesting)
+```
+
+The test data set has `r nrow(pmlTesting)` observations and `r ncol(pmlTesting)` variables.
+
+In the test data we have several variables that contains only missing value. We remove all these columns.
+
+```{r, results = "hide"}
+countNA <- function(dataName) {
+  na_count <- as.data.frame(t(sapply(dataName, function(col) {
+    c(countNA = sum(is.na(col)), percentNA = 100*round(sum(is.na(col))/length(col),4))
+  })))
+  na_count
+}
+na_countTraining <- countNA(pmlTraining) %>% select(-countNA) %>% rename(percentNA_Training = percentNA)
+na_countTesting <- countNA(pmlTesting) %>% select(-countNA) %>% rename(percentNA_Testing = percentNA)
+na <- merge(na_countTraining, na_countTesting, by = "row.names",all.x = TRUE)
+
+datatable(na, 
+  options = list(columnDefs = list(list(className = 'dt-left', targets = 0:2)),
+                pageLength = 5),colnames = c("Variables", "Training" , "Testing"))
+```
+
+```{r, results = "hide"}
+testingVblesToRemoved <-  names( pmlTesting[,colSums(is.na(pmlTesting)) == nrow(pmlTesting)]) 
+pmlTesting <- pmlTesting[,colSums(is.na(pmlTesting)) < nrow(pmlTesting)]
+```
+
+Now we remove all these variables in the training dataset and let's check if there are still missing variables in both datasets.
+
+```{r}
+pmlTraining <- pmlTraining[ , -which(names(pmlTraining) %in% testingVblesToRemoved)]
+```
+
+```{r, results = "hide"}
+#Check again for NA
+na_countTraining <- countNA(pmlTraining) %>% select(-countNA) %>% rename(percentNA_Training = percentNA)
+na_countTesting <- countNA(pmlTesting) %>% select(-countNA) %>% rename(percentNA_Testing = percentNA)
+na <- merge(na_countTraining, na_countTesting, by = "row.names",all.x = TRUE)
+
+datatable(na, 
+  options = list(columnDefs = list(list(className = 'dt-left', targets = 0:2)),
+                pageLength = 5),colnames = c("Variables", "Training" , "Testing"))
+```
+
+No more missing values in training and test data.
+
+Let's see the distribution of each class:
+```{r}
+stats <- pmlTraining %>% group_by(classe) %>% summarise(n = n() ) %>% mutate(p = percent(round(n / sum(n),4)))
+
+datatable(stats, 
+  options = list(columnDefs = list(list(className = 'dt-left', targets = 0:2)),
+                pageLength = 5),colnames = c("Classe", "Count" , "Percentage"))
+```
+
+We removed the following variables:
+X, user_name, raw_timestamp, cvtd_timestamp, new_window and numwidow and problem_is for testing dataset. These variables are not relevant for our model.
+
+```{r, results = "hide"}
+pmlTraining <- pmlTraining %>% select(-X, -user_name, -raw_timestamp_part_1, -raw_timestamp_part_2, -cvtd_timestamp, -new_window, -num_window)
+pmlTesting <- pmlTesting %>% select(-X, -user_name, -raw_timestamp_part_1, -raw_timestamp_part_2, -cvtd_timestamp, -new_window, -num_window, -problem_id)
+
+```
+
+
+## Settings
+
+We choose here to run three differents models: Classification and Regression Tree, Random Forest and finaly the Generalized Boost Regression Models.
+
+At the end we will choose the one that give the best predictions and accuracy.
+
+We chose to not overload this report by hiding some results and graphics for the least efficient algorithms.
+
+We choose to pick up 70% of the data for training and 30% for testing during classification as a Cross-validation. The 30% will be use to see how the model fitted performs.
+
+```{r}
+set.seed(12345) 
+pmlTraining$classe <- as.factor(pmlTraining$classe) 
+inTrain <- createDataPartition(pmlTraining$classe, p = 0.70, list = F)
+trainData <- pmlTraining[inTrain, ] 
+testData <- pmlTraining[-inTrain, ]
+```
+
+##Correlation Matrix
+
+Model have a good set of explicatives variables when they are not correlated.
+
+```{r}
+trainDataNoClasse <- trainData %>% select(-classe)
+correlation <- cor(trainDataNoClasse)
+```
+
+```{r}
+# mat : is a matrix of data
+# ... : further arguments to pass to the native R cor.test function
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat <- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(trainDataNoClasse)
+```
+
+```{r,  fig.height = 8}
+# Specialized the insignificant value according to the significant level
+corrplot(correlation, type = "upper", order = "hclust", 
+         p.mat = p.mat, sig.level = 0.05)
+```
+
+By looking at this figure, we decided to proceed with all the variables.
+
+##Classification and Regression Tree
+
+We will compare here three differents methods.
+
+**The entire tree**
+
+```{r, cache = TRUE}
+set.seed(12345)
+fitCART1 <- rpart(classe ~., data = trainData)
+preditCART1 <- predict(fitCART1, newdata = testData, type = "class")
+results1 <- confusionMatrix(preditCART1, testData$classe)
+results1
+```
+
+We see a accuracy rate of `r round(mean(results1$overall[1]),4)`.
+
+This full tree including all predictor appears to be very complex and seems to be difficult to interpret because we have multiple predictors.
+
+A other problem is that the full free can overfit the training data.
+
+So let's prunning the tree.
+
+**Pruning the tree**
+
+```{r, cache = TRUE}
+fitCART2 <- train(classe ~ ., data = trainData, method = "rpart",
+                trControl = trainControl(method = "cv", number = 10))
+bestTune2 <- as.data.frame(fitCART2$bestTune)
+print(bestTune2)
+```
+
+```{r}
+preditCART2 <- predict(fitCART2, newdata = testData)
+results2 <- confusionMatrix(preditCART2, testData$classe)
+results2
+```
+
+The best value for the complexity parameter is `r round(bestTune2$cp,4)` but the accuracy is 
+`r percent(round(results2$overall[1],4))`.
+The prediction accuracy of the full tree is better compared to the prune tree.
+
+## Conditionnal inference tree
+
+```{r, cache = TRUE}
+fitCIT <- train(
+  classe ~., data = trainData, method = "ctree2",
+  trControl = trainControl("cv", number = 10),
+  tuneGrid = expand.grid(maxdepth = 3, mincriterion = 0.95 )
+  )
+```
+
+```{r}
+preditCIT <- predict(fitCIT, newdata = testData)
+results3 <- confusionMatrix(preditCIT, testData$classe)
+results3
+```
+
+The accuracy rate is `r percent(round(results3$overall[1],4))`. This method is even worst than the previous two models.
+
+## Random Forests
+
+We will use 5 folds. Here we will display results and draw several graphics.
+
+```{r, cache = TRUE}
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+system.time(fitRF <-  train(
+  classe ~., data = trainData, method = "rf",
+  trControl = trainControl("cv", number = 5, allowParallel = TRUE),
+  importance = TRUE
+  ))
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+Best number of predictors: 
+
+```{r}
+bestTuneRF <- as.data.frame(fitRF$bestTuneRF)
+print(bestTuneRF)
+```
+
+```{r}
+# Final model
+print(fitRF$finalModel)
+```
+
+```{r}
+print(fitRF)
+```
+
+```{r}
+plot(fitRF, main = "Accuracy by number of predictors")
+```
+
+Here we notice that the optimal number of predictors, i.e. the number of predictors giving the highest accuracy, is `r fitRF$bestTuneRF$cp`. The slope decreases slowly until 27 predictors and strongly after but the accuracy is still very good. The fact that the use of more predictors didn't allow us to obtain the slightest precision suggests that there may be dependencies between them.
+
+```{r}
+predictRF <- predict(fitRF, newdata = testData)
+results4 <- confusionMatrix(predictRF, testData$classe)
+results4
+
+```
+
+The accuracy rate is `r percent(round(results4$overall[1],4))`.
+
+The Out Of Bag error is used to measure the performance of aggregation models. This is the average error calculated each time on the samples that were not used to calculate the model. Our Out of Bag is 0.67%.
+
+The confusion matrix that provides a more detailed view of the model's performance. The actual values can be read online and the values predicted by the algorithm in columns. Thus, the values on the diagonal correspond to good predictions while the other values have been poorly predicted. We seems to predict well.
+
+```{r}
+plot(fitRF$finalModel, main = "Error by number of trees")
+```
+
+Let's look at the importance order of the variables:
+
+```{r}
+MostImpVars <- varImp(fitRF)
+MostImpVars
+```
+
+```{r}
+# Plot MeanDecreaseAccuracy
+varImpPlot(fitRF$finalModel, type = 1, main = "Mean Decrease Accuracy")
+# Plot MeanDecreaseGini
+varImpPlot(fitRF$finalModel, type = 2, main = "Mean Decrease Gini")
+```
+
+MeanDecreaseAccuracy  is the average decrease of model accuracy in predicting the outcome of the out-of-bag samples when a specific variable is excluded from the model.
+
+MeanDecreaseGini is the average decrease in node impurity that results from splits over that variable.
+
+## Generalized Boost Regression
+
+```{r, cache = TRUE}
+system.time(fitGBR <- train(classe~., data = trainData, method = "gbm",  trControl = trainControl("cv", number = 5), verbose = FALSE))
+fitGBR
+```
+
+```{r}
+predictGBR <- predict(fitGBR, testData)
+results5 <- confusionMatrix(predictGBR, testData$classe)
+results5
+```
+
+The accuracy rate is `r percent(round(results5$overall[1],4))`. This model perform well.
+
+##CONCLUSION
+
+From the above, we can see that randomForest is the better performing algorithm with 0.67% out-of-bag (OOB) error rate and the model achieved an accuracy of `r percent(round(results4$overall[1],4))`.
+
+The Random Forest model will be applied to predict the 20 quiz testing dataset.
+
+
