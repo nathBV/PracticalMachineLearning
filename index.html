@@ -260,7 +260,7 @@ pmlTesting &lt;- pmlTesting %&gt;% select(-X, -user_name, -raw_timestamp_part_1,
 <h2>Settings</h2>
 <p>We choose here to run three differents models: Classification and Regression Tree, Random Forest and finaly the Generalized Boost Regression Models.</p>
 <p>At the end we will choose the one that give the best predictions and accuracy.</p>
-<p>We chose to not overload this report by hiding the results and do not draw graphics for the least efficient algorithms.</p>
+<p>We chose to not overload this report by hiding some results and graphics for the least efficient algorithms.</p>
 <p>We choose to pick up 70% of the data for training and 30% for testing during classification as a Cross-validation. The 30% will be use to see how the model fitted performs.</p>
 <pre class="r"><code>set.seed(12345) 
 pmlTraining$classe &lt;- as.factor(pmlTraining$classe) 
