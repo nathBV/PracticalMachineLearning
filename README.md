@@ -1,1 +1,1 @@
-# PracticalMachineLearning
+Please click on https://nathbv.github.io/PracticalMachineLearning/ to see the html file
